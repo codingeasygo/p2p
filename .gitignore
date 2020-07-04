@@ -1,0 +1,5 @@
+*.out
+coverage.html
+coverage.json
+coverage.xml
+p2ptest/p2pc
