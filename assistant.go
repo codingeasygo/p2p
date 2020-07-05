@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/codingeasygo/util/attrvalid"
 	"github.com/codingeasygo/util/converter"
 	"github.com/codingeasygo/util/uuid"
 	"github.com/codingeasygo/util/xio"
@@ -27,6 +28,7 @@ type AssisConn struct {
 	Waiting   string
 	Type      string
 	startTime time.Time
+	timeout   time.Duration
 	server    *AssisServer
 	//tcp
 	tcp net.Conn
@@ -69,22 +71,24 @@ func (a *AssisConn) LocalAddr() net.Addr {
 	return a.udp.LocalAddr()
 }
 
-func newAssisConnByConn(raw net.Conn, server *AssisServer) (conn *AssisConn) {
+func newAssisConnByConn(raw net.Conn, server *AssisServer, timeout time.Duration) (conn *AssisConn) {
 	conn = &AssisConn{
-		Type:   "tcp",
-		tcp:    raw,
-		rwc:    frame.NewReadWriteCloser(raw, server.BufferSize),
-		server: server,
+		Type:    "tcp",
+		tcp:     raw,
+		rwc:     frame.NewReadWriteCloser(raw, server.BufferSize),
+		timeout: timeout,
+		server:  server,
 	}
 	return
 }
 
-func newAssisConnByPacket(raw net.PacketConn, server *AssisServer, from net.Addr) (conn *AssisConn) {
+func newAssisConnByPacket(raw net.PacketConn, server *AssisServer, from net.Addr, timeout time.Duration) (conn *AssisConn) {
 	conn = &AssisConn{
-		Type:   "udp",
-		udp:    raw,
-		from:   from,
-		server: server,
+		Type:    "udp",
+		udp:     raw,
+		from:    from,
+		timeout: timeout,
+		server:  server,
 	}
 	return
 }
@@ -122,7 +126,6 @@ func (a *AssisAccessAll) Verify(conn *AssisConn, options xmap.M) (attrs xmap.M, 
 type AssisServer struct {
 	BufferSize int
 	Verifier   AssisVerifier
-	Timeout    time.Duration
 	delay      time.Duration
 	locker     sync.RWMutex
 	closer     chan int
@@ -136,7 +139,6 @@ func NewAssisServer(verifier AssisVerifier) (server *AssisServer) {
 	server = &AssisServer{
 		BufferSize: 2 * 1024,
 		Verifier:   verifier,
-		Timeout:    8 * time.Second,
 		delay:      time.Second,
 		conns:      map[string]*AssisConn{},
 		locker:     sync.RWMutex{},
@@ -154,40 +156,44 @@ func (a *AssisServer) Start(uris string) error {
 		if err != nil {
 			return err
 		}
+		var timeout time.Duration = 30
+		err = attrvalid.Values(u.Query()).ValidFormat(`
+			timeout,o|i,r:0;
+		`, &timeout)
 		if u.Scheme == "udp" {
 			p, err := net.ListenPacket("udp", u.Host)
 			if err != nil {
 				return err
 			}
-			a.StartPacket(p)
+			a.StartPacket(p, timeout*time.Second)
 		} else {
 			l, err := net.Listen(u.Scheme, u.Host)
 			if err != nil {
 				return err
 			}
-			a.StartListener(l)
+			a.StartListener(l, timeout*time.Second)
 		}
 	}
 	return nil
 }
 
 //StartListener will start accept listener
-func (a *AssisServer) StartListener(listener net.Listener) {
+func (a *AssisServer) StartListener(listener net.Listener, timeout time.Duration) {
 	a.locker.Lock()
 	defer a.locker.Unlock()
 	a.acces[fmt.Sprintf("%v", listener)] = listener
 	a.waiter.Add(1)
-	go a.runAccept(listener)
+	go a.runAccept(listener, timeout)
 	return
 }
 
 //StartPacket will start read by packet connection
-func (a *AssisServer) StartPacket(packet net.PacketConn) {
+func (a *AssisServer) StartPacket(packet net.PacketConn, timeout time.Duration) {
 	a.locker.Lock()
 	defer a.locker.Unlock()
 	a.acces[fmt.Sprintf("%v", packet)] = packet
 	a.waiter.Add(1)
-	go a.runPacket(packet)
+	go a.runPacket(packet, timeout)
 	return
 }
 
@@ -222,25 +228,41 @@ func (a *AssisServer) Stop() {
 	}
 }
 
-func (a *AssisServer) runAccept(listener net.Listener) (err error) {
-	log.Infof("AssisServer is starting on listener %v", listener)
+func (a *AssisServer) runAccept(listener net.Listener, timeout time.Duration) (err error) {
+	log.Infof("AssisServer is starting on listener %v by timeout %v", listener.Addr(), timeout)
 	var conn net.Conn
 	for {
 		conn, err = listener.Accept()
 		if err != nil {
 			break
 		}
-		// if tcp, ok := conn.(*net.TCPConn); ok {
-		// 	tcp.SetNoDelay(true)
-		// }
-		go a.procConn(conn)
+		go a.procConn(conn, timeout)
 	}
 	log.Infof("AssisServer runner on %v is stopped by %v", listener, err)
 	a.waiter.Done()
 	return
 }
 
-func (a *AssisServer) procConn(raw net.Conn) (err error) {
+func (a *AssisServer) runPacket(conn net.PacketConn, timeout time.Duration) (err error) {
+	log.Infof("AssisServer is starting receive packet %v by timeout %v", conn.LocalAddr(), timeout)
+	for {
+		buffer := make([]byte, a.BufferSize)
+		if timeout > 0 {
+			conn.SetReadDeadline(time.Now().Add(timeout))
+		}
+		n, from, rerr := conn.ReadFrom(buffer)
+		if rerr != nil {
+			err = rerr
+			break
+		}
+		go a.procPacket(conn, from, buffer[0:n], timeout)
+	}
+	log.Infof("AssisServer packet runner on %v is stopped by %v", conn, err)
+	a.waiter.Done()
+	return
+}
+
+func (a *AssisServer) procConn(raw net.Conn, timeout time.Duration) (err error) {
 	log.Debugf("AssisServer start process tcp connection from %v", raw.RemoteAddr())
 	defer func() {
 		if err != nil {
@@ -248,9 +270,9 @@ func (a *AssisServer) procConn(raw net.Conn) (err error) {
 		}
 		log.Debugf("AssisServer process tcp connection from %v is done by %v", raw.RemoteAddr(), err)
 	}()
-	conn := newAssisConnByConn(raw, a)
-	if a.Timeout > 0 {
-		conn.rwc.SetTimeout(a.Timeout)
+	conn := newAssisConnByConn(raw, a, timeout)
+	if timeout > 0 {
+		conn.rwc.SetTimeout(timeout)
 	}
 	buffer, err := conn.rwc.ReadFrame()
 	if err == nil {
@@ -259,24 +281,8 @@ func (a *AssisServer) procConn(raw net.Conn) (err error) {
 	return
 }
 
-func (a *AssisServer) runPacket(conn net.PacketConn) (err error) {
-	log.Infof("AssisServer is starting receive packet %v", conn)
-	for {
-		buffer := make([]byte, a.BufferSize)
-		n, from, rerr := conn.ReadFrom(buffer)
-		if rerr != nil {
-			err = rerr
-			break
-		}
-		go a.procPacket(conn, from, buffer[0:n])
-	}
-	log.Infof("AssisServer packet runner on %v is stopped by %v", conn, err)
-	a.waiter.Done()
-	return
-}
-
-func (a *AssisServer) procPacket(raw net.PacketConn, from net.Addr, buffer []byte) (err error) {
-	conn := newAssisConnByPacket(raw, a, from)
+func (a *AssisServer) procPacket(raw net.PacketConn, from net.Addr, buffer []byte, timeout time.Duration) (err error) {
+	conn := newAssisConnByPacket(raw, a, from, timeout)
 	err = a.procFrame(conn, buffer[frame.OffsetBytes:])
 	return
 }
@@ -349,7 +355,7 @@ func (a *AssisServer) procFrame(conn *AssisConn, buffer []byte) (err error) {
 }
 
 func (a *AssisServer) runTimeout() {
-	log.Infof("AssisServer start connection timeout by %v", a.Timeout)
+	log.Infof("AssisServer start timeout connection runner")
 	var running = true
 	for running {
 		select {
@@ -359,7 +365,7 @@ func (a *AssisServer) runTimeout() {
 			a.procTimeout()
 		}
 	}
-	log.Infof("AssisServer connection timeout is stopped")
+	log.Infof("AssisServer connection timeout runner is stopped")
 	a.waiter.Done()
 }
 
@@ -368,7 +374,7 @@ func (a *AssisServer) procTimeout() {
 	now := time.Now()
 	a.locker.Lock()
 	for key, conn := range a.conns {
-		if now.Sub(conn.startTime) < a.Timeout {
+		if now.Sub(conn.startTime) < conn.timeout {
 			continue
 		}
 		conns = append(conns, conn)
@@ -399,7 +405,7 @@ func AssisPunching(uri string) (remote xmap.M, err error) {
 	}
 	var (
 		bufferSize = 1500
-		timeout    = 8 * time.Second
+		timeout    = 32 * time.Second
 	)
 	err = options.ValidFormat(`
 		buffer_size,o|i,r:0~10240;
@@ -454,7 +460,7 @@ func AssisNetworkPunching(network, address string, bufferSize int, timeout time.
 	return
 }
 
-func AssisEstablishUDP(loacalPrivateAddr, localPublicAddr, remotePrivateAddr, remotePublicAddr string, bufferSize int, timeout time.Duration) (conn *net.UDPConn, remote *net.UDPAddr, err error) {
+func AssisEstablishUDP(loacalPrivateAddr, localPublicAddr, remotePrivateAddr, remotePublicAddr string, timeout time.Duration) (conn *net.UDPConn, remote *net.UDPAddr, err error) {
 	localPrivate, err := net.ResolveUDPAddr("udp", loacalPrivateAddr)
 	if err != nil {
 		return
@@ -497,8 +503,9 @@ func AssisEstablishUDP(loacalPrivateAddr, localPublicAddr, remotePrivateAddr, re
 	}()
 	var n int
 	var from net.Addr
-	buffer := make([]byte, bufferSize)
+	buffer := make([]byte, 3*1024)
 	for notsend || notrecv {
+		conn.SetReadDeadline(time.Now().Add(timeout))
 		n, from, err = conn.ReadFrom(buffer)
 		if err != nil {
 			break
@@ -514,7 +521,7 @@ func AssisEstablishUDP(loacalPrivateAddr, localPublicAddr, remotePrivateAddr, re
 	return
 }
 
-func AssisEstablishTCP(loacalPrivateAddr, localPublicAddr, remotePrivateAddr, remotePublicAddr string, listen bool, bufferSize int, timeout time.Duration) (conn *net.TCPConn, remote *net.TCPAddr, err error) {
+func AssisEstablishTCP(loacalPrivateAddr, localPublicAddr, remotePrivateAddr, remotePublicAddr string, listen bool, timeout time.Duration) (conn *net.TCPConn, remote *net.TCPAddr, err error) {
 	localPrivate, err := net.ResolveTCPAddr("tcp", loacalPrivateAddr)
 	if err != nil {
 		return
@@ -533,26 +540,30 @@ func AssisEstablishTCP(loacalPrivateAddr, localPublicAddr, remotePrivateAddr, re
 	}
 	waiter := make(chan int)
 	locker := sync.RWMutex{}
-	var connected = func(raw net.Conn, r *net.TCPAddr) {
+	connected := func(raw net.Conn, r *net.TCPAddr, done bool) {
 		locker.Lock()
 		defer locker.Unlock()
-		if conn != nil || raw == nil {
-			return
+		if !done {
+			if conn != nil || raw == nil {
+				return
+			}
+			conn, remote = raw.(*net.TCPConn), r
 		}
-		conn, remote = raw.(*net.TCPConn), r
 		if waiter != nil {
 			close(waiter)
 			waiter = nil
 		}
 	}
-	trydial := func(dialer *net.Dialer, addr string) {
+	trydial := func(dialer *net.Dialer, addr *net.TCPAddr) {
 		for i := 0; i < 10 && conn == nil; i++ {
-			raw, xerr := dialer.Dial("tcp", remotePrivateAddr)
+			raw, xerr := dialer.Dial("tcp", addr.String())
+			log.Debugf("try dial to %v done by %v", addr, xerr)
 			if xerr == nil {
-				connected(raw, remotePrivate)
+				connected(raw, addr, false)
 				break
 			}
 		}
+		connected(nil, nil, true)
 	}
 	var listener *net.TCPListener
 	if listen {
@@ -566,22 +577,27 @@ func AssisEstablishTCP(loacalPrivateAddr, localPublicAddr, remotePrivateAddr, re
 			log.Debugf("start listen on local private address %v", loacalPrivateAddr)
 			raw, xerr := listener.AcceptTCP()
 			if xerr == nil {
-				connected(raw, raw.RemoteAddr().(*net.TCPAddr))
+				connected(raw, raw.RemoteAddr().(*net.TCPAddr), false)
+			} else {
+				connected(nil, nil, true)
 			}
 		}()
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 	if !bytes.Equal(localPrivate.IP, localPublic.IP) &&
 		bytes.Equal(localPublic.IP, remotePublic.IP) &&
 		bytes.Equal(localPrivate.IP, remotePrivate.IP) {
-		log.Debugf("start dial to remote private address %v", remotePrivateAddr)
-		go trydial(&net.Dialer{}, remotePrivateAddr)
+		go func() {
+			log.Debugf("start dial to remote private address %v", remotePrivateAddr)
+			dialer := &net.Dialer{Timeout: timeout}
+			trydial(dialer, remotePrivate)
+		}()
 	}
 	{
-		log.Debugf("start dial to remote public address %v", remotePublicAddr)
-		dialer := &net.Dialer{Control: Control, LocalAddr: localPrivate, Timeout: 3 * time.Second}
 		go func() {
-			trydial(dialer, remotePublicAddr)
+			log.Debugf("start dial to remote public address %v", remotePublicAddr)
+			dialer := &net.Dialer{Control: Control, LocalAddr: localPrivate, Timeout: timeout}
+			trydial(dialer, remotePublic)
 			if listener != nil {
 				listener.Close()
 			}
@@ -605,27 +621,29 @@ func Dial(uri string) (conn net.Conn, remoteAddr net.Addr, err error) {
 		options[key] = query.Get(key)
 	}
 	var (
-		local   string
-		remote  string
-		listen  int
-		timeout = 8 * time.Second
+		local       string
+		remote      string
+		listen      int
+		waitTimeout time.Duration
+		connTimeout time.Duration
 	)
 	err = options.ValidFormat(`
 		local,r|s,l:0;
 		remote,r|s,l:0;
 		listen,o|i,o:0~1;
-		timeout,o|i,r:0;
-	`, &local, &remote, &listen, &timeout)
+		wait_timeout,o|i,r:0;
+		conn_timeout,o|i,r:0;
+	`, &local, &remote, &listen, &waitTimeout, &connTimeout)
 	if err == nil {
-		conn, remoteAddr, err = DialNetwork(u.Scheme, u.Host, local, remote, listen == 1, timeout, options)
+		conn, remoteAddr, err = DialNetwork(u.Scheme, u.Host, listen == 1, local, remote, waitTimeout*time.Second, connTimeout*time.Second, options)
 	}
 	return
 }
 
-func DialNetwork(network, assistant, localID, remoteID string, listen bool, timeout time.Duration, options xmap.M) (conn net.Conn, remote net.Addr, err error) {
+func DialNetwork(network, assistant string, listen bool, localID, remoteID string, punchingTimeout, dialTimeout time.Duration, options xmap.M) (conn net.Conn, remote net.Addr, err error) {
 	options["uuid"] = localID
 	options["waiting"] = remoteID
-	info, err := AssisNetworkPunching(network, assistant, 3*1024, timeout, options)
+	info, err := AssisNetworkPunching(network, assistant, 3*1024, punchingTimeout, options)
 	if err != nil {
 		return
 	}
@@ -639,11 +657,11 @@ func DialNetwork(network, assistant, localID, remoteID string, listen bool, time
 	if err != nil {
 		return
 	}
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(1000 * time.Millisecond)
 	if network == "tcp" {
-		conn, remote, err = AssisEstablishTCP(localPrivateAddr, localPublicAddr, remotePrivateAddr, remotePublicAddr, listen, 3*1024, timeout)
+		conn, remote, err = AssisEstablishTCP(localPrivateAddr, localPublicAddr, remotePrivateAddr, remotePublicAddr, listen, dialTimeout)
 	} else {
-		conn, remote, err = AssisEstablishUDP(localPrivateAddr, localPublicAddr, remotePrivateAddr, remotePublicAddr, 3*1024, timeout)
+		conn, remote, err = AssisEstablishUDP(localPrivateAddr, localPublicAddr, remotePrivateAddr, remotePublicAddr, dialTimeout)
 	}
 	return
 }
