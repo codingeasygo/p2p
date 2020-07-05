@@ -156,7 +156,7 @@ func (a *AssisServer) Start(uris string) error {
 		if err != nil {
 			return err
 		}
-		var timeout time.Duration = 30
+		var timeout int = 30
 		err = attrvalid.Values(u.Query()).ValidFormat(`
 			timeout,o|i,r:0;
 		`, &timeout)
@@ -165,13 +165,13 @@ func (a *AssisServer) Start(uris string) error {
 			if err != nil {
 				return err
 			}
-			a.StartPacket(p, timeout*time.Second)
+			a.StartPacket(p, time.Duration(timeout)*time.Second)
 		} else {
 			l, err := net.Listen(u.Scheme, u.Host)
 			if err != nil {
 				return err
 			}
-			a.StartListener(l, timeout*time.Second)
+			a.StartListener(l, time.Duration(timeout)*time.Second)
 		}
 	}
 	return nil
@@ -405,14 +405,14 @@ func AssisPunching(uri string) (remote xmap.M, err error) {
 	}
 	var (
 		bufferSize = 1500
-		timeout    = 32 * time.Second
+		timeout    = 32
 	)
 	err = options.ValidFormat(`
 		buffer_size,o|i,r:0~10240;
 		timeout,o|i,r:0;
 	`, &bufferSize, &timeout)
 	if err == nil {
-		remote, err = AssisNetworkPunching(u.Scheme, u.Host, bufferSize, timeout, options)
+		remote, err = AssisNetworkPunching(u.Scheme, u.Host, bufferSize, time.Duration(timeout)*time.Second, options)
 	}
 	return
 }
@@ -626,8 +626,8 @@ func Dial(uri string) (conn net.Conn, remoteAddr net.Addr, err error) {
 		local       string
 		remote      string
 		listen      int
-		waitTimeout time.Duration
-		connTimeout time.Duration
+		waitTimeout int = 30
+		connTimeout int = 2
 	)
 	err = options.ValidFormat(`
 		local,r|s,l:0;
@@ -637,7 +637,8 @@ func Dial(uri string) (conn net.Conn, remoteAddr net.Addr, err error) {
 		conn_timeout,o|i,r:0;
 	`, &local, &remote, &listen, &waitTimeout, &connTimeout)
 	if err == nil {
-		conn, remoteAddr, err = DialNetwork(u.Scheme, u.Host, listen == 1, local, remote, waitTimeout*time.Second, connTimeout*time.Second, options)
+		conn, remoteAddr, err = DialNetwork(u.Scheme, u.Host, listen == 1, local, remote,
+			time.Duration(waitTimeout)*time.Second, time.Duration(connTimeout)*time.Second, options)
 	}
 	return
 }

@@ -72,11 +72,10 @@ func TestAssistantConn(t *testing.T) {
 
 func TestAssisTimeout(t *testing.T) {
 	server := NewAssisServer(NewAssisAccessAll())
-	server.Timeout = 100 * time.Millisecond
 	server.delay = 10 * time.Millisecond
 	server.StartTimeout()
 	server.StartTimeout()
-	err := server.Start("tcp://:14322,udp://:14322")
+	err := server.Start("tcp://:14322?timeout=1,udp://:14322?timeout=1")
 	if err != nil {
 		t.Error(err)
 		return

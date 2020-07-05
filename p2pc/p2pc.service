@@ -1,0 +1,12 @@
+[Unit]
+Description=p2pc service
+After=network.target
+
+[Service]
+User=p2pc
+Restart=always
+WorkingDirectory=/home/p2pc
+ExecStart=/home/p2pc/srv/p2pc
+
+[Install]
+WantedBy=multi-user.target
