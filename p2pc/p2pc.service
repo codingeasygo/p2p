@@ -6,7 +6,7 @@ After=network.target
 User=p2pc
 Restart=always
 WorkingDirectory=/home/p2pc
-ExecStart=/home/p2pc/srv/p2pc
+ExecStart=/home/p2pc/srv/p2pc assis tcp://:18322?timeout=30,udp://:18322?timeout=30
 
 [Install]
 WantedBy=multi-user.target

@@ -31,6 +31,7 @@ Peer Connection
 
 func main() {
 	log.SetLevel(log.DebugLevel)
+	log.SetFormatter(p2p.NewPlainFormatter())
 	if len(os.Args) < 3 {
 		usage()
 		return

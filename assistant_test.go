@@ -19,6 +19,7 @@ import (
 
 func init() {
 	log.SetLevel(log.DebugLevel)
+	log.SetFormatter(NewPlainFormatter())
 	go func() {
 		http.ListenAndServe(":6060", nil)
 	}()

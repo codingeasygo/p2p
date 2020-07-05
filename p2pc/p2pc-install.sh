@@ -6,6 +6,7 @@ installServer() {
     mkdir -p /home/p2pc
     chown -R p2pc:p2pc /home/p2pc
   fi
+  mkdir -p /home/p2pc/srv/
   cp -rf * /home/p2pc/srv/
   if [ ! -f /etc/systemd/system/p2pc.service ]; then
     cp -f p2pc.service /etc/systemd/system/
