@@ -505,7 +505,9 @@ func AssisEstablishUDP(loacalPrivateAddr, localPublicAddr, remotePrivateAddr, re
 	var from net.Addr
 	buffer := make([]byte, 3*1024)
 	for notsend || notrecv {
-		conn.SetReadDeadline(time.Now().Add(timeout))
+		if timeout > 0 {
+			conn.SetReadDeadline(time.Now().Add(timeout))
+		}
 		n, from, err = conn.ReadFrom(buffer)
 		if err != nil {
 			break
