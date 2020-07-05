@@ -19,7 +19,6 @@ echo "Build $srv_name normal executor..."
 go build -o $srv_out/$srv_name github.com/codingeasygo/p2p/p2pc
 cp -f p2pc-install.sh $srv_out
 cp -f p2pc.service $srv_out
-cp -f p2pc.json $srv_out
 
 ###
 cd $output
