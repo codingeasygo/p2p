@@ -319,6 +319,17 @@ func (a *AssisServer) procFrame(conn *AssisConn, buffer []byte) (err error) {
 	conn.M["type"] = conn.Type
 	conn.startTime = time.Now()
 	log.Infof("AssisServer accepted on waiting connection from %v", conn.RemoteAddr())
+	if conn.UUID == conn.Waiting {
+		_, err = xio.WriteJSON(conn, xmap.M{
+			"code":        0,
+			"type":        conn.Type,
+			"remote":      conn.M,
+			"public_addr": conn.RemoteAddr().String(),
+		})
+		conn.Close()
+		log.Infof("AssisServer get self connection is done by %v from %v", err, conn.RemoteAddr())
+		return
+	}
 	a.locker.Lock()
 	old := a.conns[conn.UUID]
 	waiting, ok := a.conns[conn.Waiting]
@@ -406,23 +417,33 @@ func AssisPunching(uri string) (remote xmap.M, err error) {
 	var (
 		bufferSize = 1500
 		timeout    = 32
+		localAddr  = ""
 	)
 	err = options.ValidFormat(`
 		buffer_size,o|i,r:0~10240;
 		timeout,o|i,r:0;
-	`, &bufferSize, &timeout)
+		local_addr,o|s,l:0;
+	`, &bufferSize, &timeout, &localAddr)
 	if err == nil {
-		remote, err = AssisNetworkPunching(u.Scheme, u.Host, bufferSize, time.Duration(timeout)*time.Second, options)
+		remote, err = AssisNetworkPunching(u.Scheme, localAddr, u.Host, bufferSize, time.Duration(timeout)*time.Second, options)
 	}
 	return
 }
 
-func AssisNetworkPunching(network, address string, bufferSize int, timeout time.Duration, options xmap.M) (remote xmap.M, err error) {
+func AssisNetworkPunching(network, localPrivateAddr, address string, bufferSize int, timeout time.Duration, options xmap.M) (remote xmap.M, err error) {
 	log.Infof("AssisClient start dial to assistant server %v://%v", network, address)
 	defer func() {
 		log.Infof("AssisClient network punching from assistant server %v://%v is done by %v", network, address, err)
 	}()
 	dialer := net.Dialer{Control: Control}
+	if len(localPrivateAddr) > 0 {
+		switch network {
+		case "udp":
+			dialer.LocalAddr, err = net.ResolveUDPAddr(network, localPrivateAddr)
+		case "tcp":
+			dialer.LocalAddr, err = net.ResolveTCPAddr(network, localPrivateAddr)
+		}
+	}
 	raw, err := dialer.Dial(network, address)
 	if err != nil {
 		err = fmt.Errorf("dial to assistant server %v fail with %v", address, err)
@@ -646,7 +667,7 @@ func Dial(uri string) (conn net.Conn, remoteAddr net.Addr, err error) {
 func DialNetwork(network, assistant string, listen bool, localID, remoteID string, punchingTimeout, dialTimeout time.Duration, options xmap.M) (conn net.Conn, remote net.Addr, err error) {
 	options["uuid"] = localID
 	options["waiting"] = remoteID
-	info, err := AssisNetworkPunching(network, assistant, 3*1024, punchingTimeout, options)
+	info, err := AssisNetworkPunching(network, "", assistant, 3*1024, punchingTimeout, options)
 	if err != nil {
 		return
 	}

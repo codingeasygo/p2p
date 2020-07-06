@@ -68,6 +68,20 @@ func TestAssistantConn(t *testing.T) {
 	}
 	fmt.Println(remote)
 	//
+	//self
+	remote, err = AssisPunching("tcp://127.0.0.1:14322?uuid=100&waiting=100")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	fmt.Println(remote)
+	remote, err = AssisPunching("udp://127.0.0.1:14322?uuid=100&waiting=100")
+	if err != nil {
+		t.Error(err)
+		return
+	}
+	fmt.Println(remote)
+	//
 	server.Stop()
 }
 
@@ -178,7 +192,7 @@ func TestAssisError(t *testing.T) {
 		return
 	}
 	//
-	_, err = AssisNetworkPunching("tcp", "127.0.0.1:14322", 1024, time.Second, xmap.M{"xx": TestAssisError})
+	_, err = AssisNetworkPunching("tcp", "", "127.0.0.1:14322", 1024, time.Second, xmap.M{"xx": TestAssisError})
 	if err == nil {
 		t.Error(err)
 		return

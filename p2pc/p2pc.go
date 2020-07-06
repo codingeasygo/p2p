@@ -1,15 +1,18 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/codingeasygo/p2p"
 	"github.com/codingeasygo/util/xio"
+	"github.com/codingeasygo/util/xmap"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -90,6 +93,19 @@ func main() {
 		default:
 			fmt.Printf("unkonw command %v\n", os.Args[2])
 			usage()
+		}
+	case "test":
+		var err error
+		var remote = xmap.M{}
+		for _, uri := range os.Args[2:] {
+			remote, err = p2p.AssisPunching(uri + "&local_addr=" + remote.Str("local_addr"))
+			if err != nil {
+				log.Warnf("p2p test to %v fail with %v", uri, err)
+				break
+			}
+			data, _ := json.MarshalIndent(remote, "", "\t")
+			log.Infof("p2p test to %v done by\n%v\n", uri, string(data))
+			time.Sleep(time.Second)
 		}
 	default:
 		fmt.Printf("unkonw command %v\n", os.Args[1])
